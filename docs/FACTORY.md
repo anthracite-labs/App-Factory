@@ -47,10 +47,18 @@ Grant it deliberately, or edit workflows by hand.
 ### 5. Apply the branch ruleset
 
 Apply [`../config/main-ruleset.json`](../config/main-ruleset.json) to the
-default branch. It is a portable payload with no instance ids, so it can be
-applied as-is. Either configure it through the GitHub UI to match, or have an
-**explicitly authorized** maintainer apply it with admin credentials, for
-example:
+default branch.
+
+The file is **exactly the documented request body** for GitHub's "Create
+repository ruleset" endpoint and nothing else — no instance ids, no export
+metadata, and no explanatory keys. That is deliberate: a payload that is
+applied verbatim must not contain fields the API does not document, so all
+human explanation lives in this page rather than inside the JSON.
+`scripts/verify.sh` (check `ruleset`) parses it and validates its *structure*,
+rejecting unknown top-level keys as well as missing policy.
+
+Either configure it through the GitHub UI to match, or have an **explicitly
+authorized** maintainer apply it with admin credentials, for example:
 
 ```bash
 # Run by a human maintainer with admin rights on the new repository.

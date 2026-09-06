@@ -38,11 +38,31 @@ STACK_DECISION_ADR=docs/decisions/NNNN-<title>.md
 ```
 
 `scripts/verify.sh` gains a `lifecycle` check that validates the file's shape
-and — critically — its internal consistency. `ALLOW_APP_STACK=1` is accepted
-only when `PROJECT_PHASE=implementation` **and** `STACK_DECISION_ADR` names a
-file that actually exists under `docs/decisions/`. `check_no_app_stack` then
-reads that validated state instead of a constant, and reports `SKIP` rather
-than `PASS` when the guard stands down.
+and — critically — its internal consistency. A single shared helper,
+`validate_stack_transition`, is the sole authority on whether the guard may
+stand down, and both `check_lifecycle` and `check_no_app_stack` call it. It
+accepts `ALLOW_APP_STACK=1` only when **all** of the following hold:
+
+- `PROJECT_PHASE=implementation`;
+- `STACK_DECISION_ADR` names a file under `docs/decisions/` ending in `.md`;
+- that file is not the `0000-template.md` skeleton;
+- that file exists;
+- that file carries the marker `**Decision Type:** application-stack`;
+- that file carries `**Status:** accepted`.
+
+The last three matter because file existence is not approval. Without the
+marker and status requirements, pointing `STACK_DECISION_ADR` at the ADR
+template — or at any unrelated accepted foundation ADR — would stand the guard
+down, which is precisely the bypass the guard exists to prevent.
+
+Sharing one helper is equally load-bearing. `verify.sh` supports `--only=NAME`,
+so `check_no_app_stack` can run with nothing else having executed. If it
+trusted `check_lifecycle` to have validated the state, `verify.sh
+--only=no_app_stack` would stand the guard down on an invalid configuration.
+It re-validates independently and fails closed.
+
+`check_no_app_stack` reports `SKIP` rather than `PASS` when the guard
+legitimately stands down.
 
 The file is parsed line-by-line and never sourced, so a malformed or hostile
 value cannot execute in the gate that inspects it. There is no environment
@@ -78,6 +98,16 @@ Detect a `package.json` and conclude the project is in implementation.
   self-defeating.
 - **Why not:** It converts every accident into a decision.
 
+### Alternative: Accept any existing ADR path as sufficient
+
+- **Pros:** Simplest possible check; no marker convention to teach.
+- **Cons:** `docs/decisions/0000-template.md` exists in every repository, as do
+  the foundation ADRs. Any of them would satisfy the check, so the "ADR-backed"
+  guarantee would be decorative.
+- **Why not:** This was the original implementation and an independent review
+  correctly rejected it. A machine-checkable marker plus an accepted status is
+  the smallest change that makes the requirement real.
+
 ### Alternative: Derive the phase from the ADR directory alone
 
 - **Pros:** One source of truth; no duplicated state.
@@ -97,8 +127,11 @@ Detect a `package.json` and conclude the project is in implementation.
   referenced ADR must exist on disk.
 - Both directions are provable, and are proved: `scripts/selftest.sh` asserts
   the guard rejects stack artifacts before the transition, stands down after a
-  valid one, and still rejects `ALLOW_APP_STACK=1` when the phase or the ADR is
-  missing or wrong.
+  valid one, and still rejects `ALLOW_APP_STACK=1` when the phase is wrong or
+  the ADR is missing, the template, unrelated, or merely proposed — including
+  when only `--only=no_app_stack` is run.
+- Committed lifecycle state is unambiguous: duplicate assignments of any
+  required key are rejected rather than silently resolved to the first.
 - Documentation, CI, and the gate all read the same state, so `docs/ROADMAP.md`
   and repository reality cannot drift.
 - The template is genuinely reusable: a new project graduates without ever

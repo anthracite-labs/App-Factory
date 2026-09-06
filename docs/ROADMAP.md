@@ -55,11 +55,15 @@ Exit condition: an accepted stack ADR.
 
 ## Stage: implementation (`PROJECT_PHASE=implementation`)
 
+- [ ] Mark the stack ADR with `**Decision Type:** application-stack` and
+      `**Status:** accepted`.
 - [ ] Set `PROJECT_PHASE=implementation`, `ALLOW_APP_STACK=1` and
       `STACK_DECISION_ADR=docs/decisions/NNNN-<title>.md` in
       `config/project.env`, in one reviewed PR that changes nothing else.
-      `scripts/verify.sh` (check `lifecycle`) rejects the transition unless all
-      three are consistent and the ADR file exists.
+      `scripts/verify.sh` rejects the transition unless all three agree, the
+      ADR exists, is not the template, carries the stack marker, and is
+      accepted. Both `lifecycle` and `no_app_stack` validate this
+      independently, so neither can be bypassed by running one check alone.
 - [ ] Add stack-specific lint/test/build jobs to CI. The foundation gate keeps
       running alongside them; it is never replaced.
 - [ ] Add codemaps under [codemaps/](codemaps/README.md) as code areas appear.

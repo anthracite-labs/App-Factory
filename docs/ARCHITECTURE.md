@@ -93,10 +93,20 @@ ALLOW_APP_STACK=1            ──▶   check_no_app_stack stands down (SKIP)
 STACK_DECISION_ADR=docs/decisions/NNNN-....md
 ```
 
-`check_lifecycle` fails if `ALLOW_APP_STACK=1` appears without
-`PROJECT_PHASE=implementation` and an existing `STACK_DECISION_ADR` file, so
-the transition cannot be smuggled in as a one-character edit. Both directions
-are covered by negative tests in `scripts/selftest.sh`.
+A single shared helper, `validate_stack_transition`, decides whether the guard
+may stand down, and **both** `check_lifecycle` and `check_no_app_stack` call
+it. Neither check trusts the other to have run, so `verify.sh
+--only=no_app_stack` reaches the same verdict as a full run — a check that
+stands down because it assumed another check validated the state is not a
+guard.
+
+The transition is rejected unless `ALLOW_APP_STACK=1`,
+`PROJECT_PHASE=implementation`, and `STACK_DECISION_ADR` all agree **and** the
+referenced ADR exists, is not the `0000-template.md` skeleton, carries
+`**Decision Type:** application-stack`, and is marked
+`**Status:** accepted`. Existing on disk is not approval. Both directions, and
+every rejection path, are covered by negative tests in
+`scripts/selftest.sh`.
 
 ## Design principles
 

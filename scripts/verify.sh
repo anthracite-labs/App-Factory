@@ -128,6 +128,86 @@ config_value() {
     head -n 1 | sed 's/[[:space:]]*$//'
 }
 
+# config_key_count counts how many times a key is assigned. Duplicate
+# assignments make committed lifecycle state ambiguous: config_value silently
+# takes the first, a human reading the file usually takes the last.
+config_key_count() {
+  local key="$1"
+  [ -f "$PROJECT_CONFIG" ] || { printf '0'; return 0; }
+  grep -cE "^[[:space:]]*${key}[[:space:]]*=" "$PROJECT_CONFIG" 2>/dev/null || printf '0'
+}
+
+# The marker that makes an ADR machine-identifiable as the record of an
+# application-stack decision. A stack ADR must carry BOTH this line and an
+# accepted status; existing on disk is not enough.
+STACK_ADR_MARKER='**Decision Type:** application-stack'
+STACK_ADR_STATUS='**Status:** accepted'
+
+# validate_stack_transition is the single source of truth for "may the
+# foundation no-stack guard stand down?". It is shared by check_lifecycle and
+# check_no_app_stack so that running either one alone - including
+# `verify.sh --only=no_app_stack` - reaches the same verdict. Duplicating this
+# logic, or letting one check trust that another already ran, is exactly how a
+# standalone invocation ends up standing the guard down on an invalid state.
+#
+# Appends human-readable reasons to the caller's array named by $1.
+# Returns 0 when the transition is valid, 1 otherwise.
+validate_stack_transition() {
+  local -n _problems="$1"
+  local phase allow adr
+  phase="$(config_value PROJECT_PHASE)"
+  allow="$(config_value ALLOW_APP_STACK)"
+  adr="$(config_value STACK_DECISION_ADR)"
+
+  [ "$allow" = "1" ] || return 1
+
+  local ok=0
+
+  if [ "$phase" != "implementation" ]; then
+    _problems+=("ALLOW_APP_STACK=1 requires PROJECT_PHASE=implementation, got: ${phase:-<empty>}")
+    ok=1
+  fi
+
+  if [ -z "$adr" ]; then
+    _problems+=("ALLOW_APP_STACK=1 requires STACK_DECISION_ADR to name the ADR that records the stack choice")
+    return 1
+  fi
+
+  case "$adr" in
+    docs/decisions/*.md) : ;;
+    *)
+      _problems+=("STACK_DECISION_ADR must be a path under docs/decisions/ ending in .md, got: $adr")
+      return 1
+      ;;
+  esac
+
+  # The ADR template is a fill-in-the-blanks skeleton, never a decision.
+  case "$(basename -- "$adr")" in
+    0000-template.md)
+      _problems+=("STACK_DECISION_ADR points at the ADR template, which records no decision: $adr")
+      return 1
+      ;;
+  esac
+
+  if [ ! -f "$adr" ]; then
+    _problems+=("STACK_DECISION_ADR points at a file that does not exist: $adr")
+    return 1
+  fi
+
+  # Existence is not approval, and an arbitrary foundation ADR is not a stack
+  # decision. Both markers must be present in the referenced file.
+  if ! grep -qF "$STACK_ADR_MARKER" "$adr"; then
+    _problems+=("$adr is not marked as a stack decision (expected a line: ${STACK_ADR_MARKER})")
+    ok=1
+  fi
+  if ! grep -qF "$STACK_ADR_STATUS" "$adr"; then
+    _problems+=("$adr is not accepted (expected a line: ${STACK_ADR_STATUS})")
+    ok=1
+  fi
+
+  return "$ok"
+}
+
 selected() {
   local name="$1"
   [ "${#SELECTED[@]}" -eq 0 ] && return 0
@@ -247,10 +327,16 @@ check_foundation_version() {
   fi
   local ecc_version
   ecc_version="$(version_value UPSTREAM_VERSION)"
-  if [ -n "$ecc_version" ] && [ "$value" = "$ecc_version" ]; then
-    # Not fatal on its own, but the two are different things and a maintainer
-    # who copied one into the other should hear about it.
-    problems+=("equals UPSTREAM_VERSION ($ecc_version); foundation and ECC versions must not be conflated")
+  # Conceptual separation is proved by the two values living in distinct
+  # files/fields with distinct meanings, NOT by requiring them to differ
+  # numerically. They may legitimately coincide one day; an inequality rule
+  # would then force an artificial version bump for no engineering reason.
+  # What must hold is that both are present and independently declared.
+  if [ -z "$ecc_version" ]; then
+    problems+=("UPSTREAM_VERSION is absent from .ecc/VERSION; the ECC version must be declared separately")
+  fi
+  if grep -qE '^[[:space:]]*(UPSTREAM|AGENTSHIELD)' FOUNDATION_VERSION 2>/dev/null; then
+    problems+=("$file must contain only the foundation version, not ECC or scanner provenance")
   fi
   if [ "${#problems[@]}" -gt 0 ]; then
     fail_lines "$name" "${#problems[@]} problem(s) with $file" "${problems[@]}"
@@ -779,10 +865,16 @@ check_lifecycle() {
   done < "$PROJECT_CONFIG"
 
   # Required keys must be present, even when empty.
-  local key required_keys=(PROJECT_NAME PROJECT_SLUG PROJECT_PHASE ALLOW_APP_STACK STACK_DECISION_ADR)
+  local key count required_keys=(PROJECT_NAME PROJECT_SLUG PROJECT_PHASE ALLOW_APP_STACK STACK_DECISION_ADR)
   for key in "${required_keys[@]}"; do
-    grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$PROJECT_CONFIG" ||
+    count="$(config_key_count "$key")"
+    if [ "$count" -eq 0 ]; then
       problems+=("$PROJECT_CONFIG has no ${key} key")
+    elif [ "$count" -gt 1 ]; then
+      # Ambiguous state is unsafe state: the parser takes the first
+      # assignment, a human reading the file usually takes the last.
+      problems+=("$PROJECT_CONFIG assigns ${key} ${count} times; committed lifecycle state must be unambiguous")
+    fi
   done
 
   local phase allow adr slug
@@ -805,20 +897,10 @@ check_lifecycle() {
     problems+=("PROJECT_SLUG must be lowercase kebab-case, got: $slug")
   fi
 
-  # The transition rule. All three must agree before the guard may stand down.
+  # The transition rule, evaluated by the shared validator so that this check
+  # and check_no_app_stack can never disagree about what is legitimate.
   if [ "$allow" = "1" ]; then
-    [ "$phase" = "implementation" ] ||
-      problems+=("ALLOW_APP_STACK=1 requires PROJECT_PHASE=implementation, got: ${phase:-<empty>}")
-    if [ -z "$adr" ]; then
-      problems+=("ALLOW_APP_STACK=1 requires STACK_DECISION_ADR to name the ADR that records the stack choice")
-    else
-      case "$adr" in
-        docs/decisions/*.md) : ;;
-        *) problems+=("STACK_DECISION_ADR must be a path under docs/decisions/ ending in .md, got: $adr") ;;
-      esac
-      [ -f "$adr" ] ||
-        problems+=("STACK_DECISION_ADR points at a file that does not exist: $adr")
-    fi
+    validate_stack_transition problems || :
   else
     # Guard is up. An ADR reference is allowed (the decision may be recorded
     # before the transition PR), but it must still resolve if present.
@@ -855,8 +937,18 @@ check_no_app_stack() {
   # Fail closed: an unreadable or absent value keeps the guard up.
   [ -n "$allow" ] || allow="0"
   if [ "$allow" = "1" ]; then
-    # check_lifecycle has already validated that this is legitimate; if it is
-    # not, the gate has already failed there.
+    # This check must NOT assume check_lifecycle ran. `verify.sh
+    # --only=no_app_stack` reaches this line with nothing else validated, so
+    # the transition is re-validated here through the shared helper. A guard
+    # that stands down on an unverified claim is not a guard.
+    local -a transition_problems=()
+    if ! validate_stack_transition transition_problems; then
+      fail_lines "$name" "ALLOW_APP_STACK=1 but the transition is not valid; guard stays up" \
+        "${transition_problems[@]}" \
+        "The foundation no-stack guard only stands down for an explicit," \
+        "ADR-backed transition. Fix ${PROJECT_CONFIG} or the referenced ADR."
+      return 1
+    fi
     report_skip "$name" "guard stood down: phase=${phase}, ADR=${adr:-<none>} (stack-specific checks apply instead)"
     return 0
   fi
@@ -902,49 +994,177 @@ check_ruleset() {
     fail_lines "$name" "$file missing"
     return 1
   fi
-  local problems=()
 
-  # Parse. python3 is present on every runner used here; jq is a fallback.
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import sys, json; json.load(open(sys.argv[1]))' "$file" >/dev/null 2>&1 ||
-      problems+=("$file is not valid JSON")
-  elif command -v jq >/dev/null 2>&1; then
-    jq -e . "$file" >/dev/null 2>&1 || problems+=("$file is not valid JSON")
-  else
-    report_skip "$name" "no JSON parser available (CI provides python3)"
+  if ! command -v python3 >/dev/null 2>&1; then
+    report_skip "$name" "python3 unavailable for structural validation (CI provides it)"
     return 0
   fi
 
-  # Portability: an export would carry these; a reusable template must not.
-  local forbidden_key
-  for forbidden_key in '"id"' '"node_id"' '"repository_id"' '"created_at"' \
-    '"updated_at"' '"source_type"' '"_links"' '"integration_id"' '"actor_id"'; do
-    grep -qF "$forbidden_key" "$file" &&
-      problems+=("$file contains instance-specific key ${forbidden_key}; the template must stay portable")
-  done
-  # A Ditto-derived export would also carry the source repository slug.
-  grep -qiE '"[^"]*(ditto)[^"]*"' "$file" &&
-    problems+=("$file references the source project; the template must be generic")
+  # Structural validation, not text matching. This file's sole purpose is to be
+  # POSTed to the GitHub rulesets API, so the check must assert the shape the
+  # API will actually read: a policy string sitting in a decoy location, or a
+  # required context nested under the wrong rule, must not satisfy it.
+  local out rc
+  out="$(
+    REQUIRED_CONTEXT_1="${REQUIRED_CI_CONTEXTS[0]}" \
+    REQUIRED_CONTEXT_2="${REQUIRED_CI_CONTEXTS[1]}" \
+    RULESET_FILE="$file" \
+    python3 - <<'PYEOF' 2>&1
+import json
+import os
+import sys
 
-  # Policy intent.
-  grep -qF '"target": "branch"' "$file" || problems+=("ruleset does not target a branch")
-  grep -qF '~DEFAULT_BRANCH' "$file" || problems+=("ruleset does not target the default branch")
-  grep -qF '"enforcement": "active"' "$file" || problems+=("ruleset is not actively enforced")
-  grep -qF '"bypass_actors": []' "$file" || problems+=("ruleset must declare no bypass actors by default")
-  grep -qF '"type": "pull_request"' "$file" || problems+=("ruleset does not require pull requests")
-  grep -qF '"type": "deletion"' "$file" || problems+=("ruleset does not prevent branch deletion")
-  grep -qF '"type": "non_fast_forward"' "$file" || problems+=("ruleset does not prevent force pushes")
-  grep -qF '"type": "required_status_checks"' "$file" || problems+=("ruleset does not require status checks")
-  grep -qF '"required_approving_review_count": 0' "$file" ||
-    problems+=("ruleset does not set 0 mandatory human approvals (solo-owner workflow)")
-  grep -qF '"required_review_thread_resolution": true' "$file" ||
-    problems+=("ruleset does not require review-thread resolution")
-  grep -qF '"strict_required_status_checks_policy": true' "$file" ||
-    problems+=("ruleset does not require branches to be up to date (strict policy)")
-  local ctx
-  for ctx in "${REQUIRED_CI_CONTEXTS[@]}"; do
-    grep -qF "\"${ctx}\"" "$file" || problems+=("ruleset does not require the context: ${ctx}")
-  done
+path = os.environ["RULESET_FILE"]
+wanted_contexts = [os.environ["REQUIRED_CONTEXT_1"], os.environ["REQUIRED_CONTEXT_2"]]
+problems = []
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+except (OSError, ValueError) as exc:
+    print("%s is not valid JSON: %s" % (path, exc))
+    sys.exit(1)
+
+if not isinstance(doc, dict):
+    print("%s must be a JSON object (the API request body)" % path)
+    sys.exit(1)
+
+# 1. Portability. An export carries server-assigned state; a reusable template
+#    must not. Unknown keys are rejected too: the payload is applied verbatim,
+#    so anything the API does not document is either noise or a mistake.
+allowed_top_level = {
+    "name", "target", "enforcement", "conditions", "bypass_actors", "rules",
+}
+export_only = {
+    "id", "node_id", "repository_id", "created_at", "updated_at",
+    "source", "source_type", "_links", "current_user_can_bypass", "links",
+}
+for key in sorted(doc):
+    if key in export_only:
+        problems.append("instance-specific/export key present: %r" % key)
+    elif key not in allowed_top_level:
+        problems.append("unexpected top-level key: %r" % key)
+
+for key in sorted(allowed_top_level - set(doc)):
+    problems.append("missing required top-level key: %r" % key)
+
+# 2. Target and scope.
+if doc.get("target") != "branch":
+    problems.append("target must be 'branch', got %r" % (doc.get("target"),))
+if doc.get("enforcement") != "active":
+    problems.append("enforcement must be 'active', got %r" % (doc.get("enforcement"),))
+
+conditions = doc.get("conditions")
+if not isinstance(conditions, dict):
+    problems.append("conditions must be an object")
+else:
+    ref_name = conditions.get("ref_name")
+    if not isinstance(ref_name, dict):
+        problems.append("conditions.ref_name must be an object")
+    else:
+        include = ref_name.get("include")
+        if include != ["~DEFAULT_BRANCH"]:
+            problems.append(
+                "conditions.ref_name.include must be exactly ['~DEFAULT_BRANCH'], got %r" % (include,)
+            )
+        if ref_name.get("exclude") not in ([], None):
+            problems.append(
+                "conditions.ref_name.exclude must be empty, got %r" % (ref_name.get("exclude"),)
+            )
+
+# 3. No bypass actors. An empty list is required; absent or populated is not.
+bypass = doc.get("bypass_actors")
+if not isinstance(bypass, list):
+    problems.append("bypass_actors must be a list")
+elif bypass:
+    problems.append("bypass_actors must be empty, got %d entry(ies)" % len(bypass))
+
+# 4. Rules, indexed by type so position cannot matter.
+rules = doc.get("rules")
+by_type = {}
+if not isinstance(rules, list):
+    problems.append("rules must be a list")
+else:
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            problems.append("rules[%d] must be an object" % index)
+            continue
+        rule_type = rule.get("type")
+        if not isinstance(rule_type, str):
+            problems.append("rules[%d] has no string 'type'" % index)
+            continue
+        if rule_type in by_type:
+            problems.append("duplicate rule type: %r" % rule_type)
+        by_type[rule_type] = rule
+
+for required_type in ("deletion", "non_fast_forward", "pull_request", "required_status_checks"):
+    if required_type not in by_type:
+        problems.append("missing required rule type: %r" % required_type)
+
+# 5. Pull-request policy, read from the rule's own parameters object.
+pr_rule = by_type.get("pull_request")
+if isinstance(pr_rule, dict):
+    params = pr_rule.get("parameters")
+    if not isinstance(params, dict):
+        problems.append("pull_request rule has no parameters object")
+    else:
+        if params.get("required_approving_review_count") != 0:
+            problems.append(
+                "pull_request.required_approving_review_count must be 0 (solo-owner workflow), got %r"
+                % (params.get("required_approving_review_count"),)
+            )
+        if params.get("required_review_thread_resolution") is not True:
+            problems.append(
+                "pull_request.required_review_thread_resolution must be true, got %r"
+                % (params.get("required_review_thread_resolution"),)
+            )
+
+# 6. Status checks: strict policy plus the exact two portable contexts.
+sc_rule = by_type.get("required_status_checks")
+if isinstance(sc_rule, dict):
+    params = sc_rule.get("parameters")
+    if not isinstance(params, dict):
+        problems.append("required_status_checks rule has no parameters object")
+    else:
+        if params.get("strict_required_status_checks_policy") is not True:
+            problems.append(
+                "strict_required_status_checks_policy must be true (branch must be up to date), got %r"
+                % (params.get("strict_required_status_checks_policy"),)
+            )
+        checks = params.get("required_status_checks")
+        if not isinstance(checks, list):
+            problems.append("required_status_checks.required_status_checks must be a list")
+        else:
+            found = []
+            for index, check in enumerate(checks):
+                if not isinstance(check, dict):
+                    problems.append("required_status_checks[%d] must be an object" % index)
+                    continue
+                context = check.get("context")
+                if not isinstance(context, str):
+                    problems.append("required_status_checks[%d] has no string 'context'" % index)
+                    continue
+                found.append(context)
+            for wanted in wanted_contexts:
+                if wanted not in found:
+                    problems.append(
+                        "required status context missing from the status-check rule: %r" % wanted
+                    )
+
+for problem in problems:
+    print(problem)
+sys.exit(1 if problems else 0)
+PYEOF
+  )"
+  rc=$?
+
+  local problems=()
+  if [ "$rc" -ne 0 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      problems+=("$line")
+    done <<< "$out"
+  fi
 
   # A maintainer must be told how to apply it; nothing here applies it.
   grep -qF 'config/main-ruleset.json' docs/FACTORY.md 2>/dev/null ||
@@ -954,7 +1174,7 @@ check_ruleset() {
     fail_lines "$name" "${#problems[@]} ruleset problem(s)" "${problems[@]}"
     return 1
   fi
-  report_pass "$name" "portable ruleset requires PR, thread resolution, strict checks, no bypass"
+  report_pass "$name" "portable payload: PR, thread resolution, strict checks, no bypass, no export fields"
 }
 
 # --- 17. AgentShield ---------------------------------------------------------

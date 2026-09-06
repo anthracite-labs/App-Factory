@@ -255,21 +255,32 @@ expect_fail "no_app_stack/rejected-src-dir-in-architecture" --only=no_app_stack
 
 # 2. After an explicit, ADR-backed transition, the FOUNDATION guard stands
 #    down. This proves the guard is lifecycle state, not a permanent constant.
+# write_stack_adr creates an ADR fixture in the sandbox.
+#   $1 file name, $2 status line value, $3 "marked" to include the stack marker
+write_stack_adr() {
+  local file="$1" status="$2" marked="$3"
+  {
+    printf '# ADR-0099: Selftest stack decision fixture\n\n'
+    printf '**Date:** 2026-09-06\n'
+    printf '**Status:** %s\n' "$status"
+    if [ "$marked" = "marked" ]; then
+      printf '**Decision Type:** application-stack\n'
+    fi
+    printf '**Deciders:** selftest fixture\n\n'
+    printf '## Context\n\nFixture used by scripts/selftest.sh.\n'
+  } > "${SANDBOX}/docs/decisions/${file}"
+}
+
+# transition_to points the sandbox at an ADR and enables application mode.
+transition_to() {
+  set_config PROJECT_PHASE implementation
+  set_config ALLOW_APP_STACK 1
+  set_config STACK_DECISION_ADR "docs/decisions/$1"
+}
+
 reset_sandbox
-cat > "${SANDBOX}/docs/decisions/0099-selftest-stack.md" <<'ADR'
-# ADR-0099: Selftest stack decision fixture
-
-**Date:** 2026-09-06
-**Status:** accepted
-**Deciders:** selftest fixture
-
-## Context
-
-Fixture used by scripts/selftest.sh to prove the lifecycle transition.
-ADR
-set_config PROJECT_PHASE implementation
-set_config ALLOW_APP_STACK 1
-set_config STACK_DECISION_ADR docs/decisions/0099-selftest-stack.md
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
 printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
 expect_pass "no_app_stack/stands-down-after-transition" --only=no_app_stack
 if printf '%s' "$GATE_OUT" | grep -q 'SKIP.*no_app_stack'; then
@@ -302,6 +313,74 @@ set_config ALLOW_APP_STACK 1
 set_config PROJECT_PHASE discovery
 set_config STACK_DECISION_ADR docs/decisions/0000-template.md
 expect_fail "lifecycle/allow-in-wrong-phase" --only=lifecycle
+
+# The referenced ADR must actually record an ACCEPTED APPLICATION-STACK
+# decision. Existing on disk is not approval: the template ships in every
+# repository, and so do the foundation ADRs. Without these cases the
+# "ADR-backed" guarantee is decorative.
+reset_sandbox
+transition_to 0000-template.md
+expect_fail "lifecycle/adr-is-the-template" --only=lifecycle
+
+reset_sandbox
+transition_to 0002-verification-gate.md
+expect_fail "lifecycle/adr-unrelated-but-accepted" --only=lifecycle
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed marked
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/adr-stack-but-only-proposed" --only=lifecycle
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted unmarked
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/adr-accepted-but-not-a-stack-decision" --only=lifecycle
+
+# The same rejections must hold when no_app_stack runs ALONE. verify.sh
+# supports --only=NAME, so this check must not assume check_lifecycle ran; if
+# it trusts an unvalidated ALLOW_APP_STACK=1 it stands the guard down on an
+# invalid state.
+reset_sandbox
+set_config ALLOW_APP_STACK 1
+set_config PROJECT_PHASE discovery
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-wrong-phase-fails-closed" --only=no_app_stack
+
+reset_sandbox
+set_config PROJECT_PHASE implementation
+set_config ALLOW_APP_STACK 1
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-missing-adr-fails-closed" --only=no_app_stack
+
+reset_sandbox
+transition_to 0000-template.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-template-adr-fails-closed" --only=no_app_stack
+
+reset_sandbox
+transition_to 0002-verification-gate.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-unrelated-adr-fails-closed" --only=no_app_stack
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed marked
+transition_to 0099-selftest-stack.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-unaccepted-adr-fails-closed" --only=no_app_stack
+
+reset_sandbox
+transition_to 0999-does-not-exist.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-missing-adr-file-fails-closed" --only=no_app_stack
+
+# Duplicate assignments make committed lifecycle state ambiguous.
+reset_sandbox
+printf 'PROJECT_PHASE=implementation\n' >> "${SANDBOX}/config/project.env"
+expect_fail "lifecycle/duplicate-phase-key" --only=lifecycle
+
+reset_sandbox
+printf 'ALLOW_APP_STACK=1\n' >> "${SANDBOX}/config/project.env"
+expect_fail "lifecycle/duplicate-allow-key" --only=lifecycle
 
 # 4. Malformed lifecycle configuration is rejected.
 reset_sandbox
@@ -343,9 +422,24 @@ reset_sandbox
 printf '0.1\n' > "${SANDBOX}/FOUNDATION_VERSION"
 expect_fail "foundation_version/incomplete-semver" --only=foundation_version
 
+# Conceptual separation is proved by distinct files/fields, NOT by requiring
+# the two versions to differ numerically: they may legitimately coincide, and
+# an inequality rule would force an artificial bump. A foundation version that
+# happens to equal the ECC version is therefore accepted...
 reset_sandbox
 printf '2.2.0\n' > "${SANDBOX}/FOUNDATION_VERSION"
-expect_fail "foundation_version/conflated-with-ecc-version" --only=foundation_version
+expect_pass "foundation_version/may-coincide-with-ecc-version" --only=foundation_version
+
+# ...but the two must remain independently declared. Collapsing ECC provenance
+# into the foundation version file, or dropping it from .ecc/VERSION, is a
+# real conflation and must fail.
+reset_sandbox
+printf '0.1.0\nUPSTREAM_VERSION=2.2.0\n' > "${SANDBOX}/FOUNDATION_VERSION"
+expect_fail "foundation_version/carries-ecc-provenance" --only=foundation_version
+
+reset_sandbox
+sed -i '/^UPSTREAM_VERSION=/d' "${SANDBOX}/.ecc/VERSION"
+expect_fail "foundation_version/ecc-version-not-declared" --only=foundation_version
 
 reset_sandbox
 rm -f "${SANDBOX}/FOUNDATION_VERSION"
@@ -387,6 +481,80 @@ reset_sandbox
 sed -i 's/"name": "main-protection"/"name": "main-protection",\n  "id": 12345678,\n  "node_id": "RRS_placeholder"/' \
   "${SANDBOX}/config/main-ruleset.json"
 expect_fail "ruleset/instance-ids-present" --only=ruleset
+
+# Structural, not textual. A validator that greps for policy strings can be
+# satisfied by putting them in the wrong place; these cases move required
+# values to decoy locations while keeping the JSON syntactically valid.
+ruleset_py() {
+  RULESET="${SANDBOX}/config/main-ruleset.json" python3 - "$@" <<'PYEOF'
+import json, os, sys
+path = os.environ["RULESET"]
+with open(path, encoding="utf-8") as fh:
+    doc = json.load(fh)
+exec(sys.argv[1])  # noqa: S102 - test fixture mutation, not repository code
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+PYEOF
+}
+
+# Required context present, but as a decoy top-level key rather than inside
+# the required_status_checks rule.
+reset_sandbox
+ruleset_py '
+for r in doc["rules"]:
+    if r["type"] == "required_status_checks":
+        r["parameters"]["required_status_checks"] = [{"context": "Independent checks"}]
+doc["decoy_contexts"] = ["Foundation gate"]
+'
+expect_fail "ruleset/context-in-decoy-location" --only=ruleset
+
+# Strict policy flag moved out of the rule parameters to the top level.
+reset_sandbox
+ruleset_py '
+for r in doc["rules"]:
+    if r["type"] == "required_status_checks":
+        r["parameters"]["strict_required_status_checks_policy"] = False
+doc["strict_required_status_checks_policy"] = True
+'
+expect_fail "ruleset/strict-flag-in-decoy-location" --only=ruleset
+
+# Thread resolution moved out of the pull_request rule parameters.
+reset_sandbox
+ruleset_py '
+for r in doc["rules"]:
+    if r["type"] == "pull_request":
+        del r["parameters"]["required_review_thread_resolution"]
+doc["required_review_thread_resolution"] = True
+'
+expect_fail "ruleset/thread-resolution-in-decoy-location" --only=ruleset
+
+# A bypass actor hidden behind an empty-looking decoy key.
+reset_sandbox
+ruleset_py '
+doc["bypass_actors"] = [{"actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}]
+doc["bypass_actors_note"] = []
+'
+expect_fail "ruleset/bypass-actor-with-decoy-empty-key" --only=ruleset
+
+# The payload must be exactly the documented request body: no explanatory or
+# undocumented keys, because it is applied verbatim.
+reset_sandbox
+ruleset_py 'doc["_comment"] = ["explanatory text does not belong in an API payload"]'
+expect_fail "ruleset/undocumented-comment-key" --only=ruleset
+
+# Rule present but duplicated with conflicting parameters.
+reset_sandbox
+ruleset_py 'doc["rules"].append({"type": "pull_request", "parameters": {"required_approving_review_count": 3}})'
+expect_fail "ruleset/duplicate-rule-type" --only=ruleset
+
+# Targeting a named branch instead of the portable default-branch token.
+reset_sandbox
+ruleset_py 'doc["conditions"]["ref_name"]["include"] = ["refs/heads/main"]'
+expect_fail "ruleset/hardcoded-branch-not-portable" --only=ruleset
+
+reset_sandbox
+ruleset_py 'doc["enforcement"] = "evaluate"'
+expect_fail "ruleset/not-actively-enforced" --only=ruleset
 
 # --- CI wiring and the ruleset must agree ------------------------------------
 reset_sandbox
@@ -564,6 +732,41 @@ if (cd "$SANDBOX" && bash scripts/init-project.sh --name 'evil$(touch /tmp/pwned
 else
   ok "init/rejects-unsafe-name" "refused"
 fi
+
+# --force must never leave the lifecycle in a state the gate rejects. Starting
+# from a valid implementation-phase project, --force previously rewrote the
+# phase back to discovery while leaving ALLOW_APP_STACK=1 in place, producing
+# an invalid config: a "safe" script corrupting the repository it set up.
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
+set_config PROJECT_NAME 'Existing Project'
+set_config PROJECT_SLUG existing-project
+expect_pass "init/force-precondition-is-valid"
+
+force_out="$(cd "$SANDBOX" && bash scripts/init-project.sh --force --name 'Renamed Project' 2>&1)"
+force_rc=$?
+if [ "$force_rc" -ne 0 ]; then
+  bad "init/force-succeeds" "exit $force_rc: $(printf '%s' "$force_out" | head -n 1)"
+else
+  ok "init/force-succeeds" "exit 0"
+fi
+
+if grep -qE '^PROJECT_NAME=Renamed Project$' "${SANDBOX}/config/project.env"; then
+  ok "init/force-updates-identity" "name rewritten"
+else
+  bad "init/force-updates-identity" "--force did not update the project name"
+fi
+
+if grep -qE '^PROJECT_PHASE=implementation$' "${SANDBOX}/config/project.env" &&
+   grep -qE '^ALLOW_APP_STACK=1$' "${SANDBOX}/config/project.env"; then
+  ok "init/force-preserves-lifecycle" "phase and stack state preserved"
+else
+  bad "init/force-preserves-lifecycle" "--force regressed the lifecycle state"
+fi
+
+# The decisive assertion: whatever --force did, the config must still be valid.
+expect_pass "init/force-leaves-valid-lifecycle"
 
 # --dry-run must write nothing.
 reset_sandbox

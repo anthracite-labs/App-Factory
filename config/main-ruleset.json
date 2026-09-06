@@ -1,15 +1,4 @@
 {
-  "_comment": [
-    "Portable GitHub ruleset TEMPLATE for the default branch of a repository",
-    "generated from App-Factory. It is a request payload, not an export: it",
-    "contains no ruleset id, node id, repository id, timestamps, or",
-    "integration ids, so it can be applied unchanged to any new repository.",
-    "Apply it manually — see docs/FACTORY.md. Scripts in this repository",
-    "validate its shape and never call the GitHub admin API themselves.",
-    "The required status check contexts below must match the job names in",
-    ".github/workflows/verify.yml exactly: 'Foundation gate' and",
-    "'Independent checks'."
-  ],
   "name": "main-protection",
   "target": "branch",
   "enforcement": "active",

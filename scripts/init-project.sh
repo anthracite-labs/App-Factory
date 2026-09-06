@@ -14,14 +14,16 @@
 #   - never sets ALLOW_APP_STACK — that transition needs an ADR and review.
 #
 # It is safe to run twice: an already-initialized repository is reported and
-# left untouched unless --force is given.
+# left untouched unless --force is given. --force rewrites identity only and
+# preserves the lifecycle phase and stack state, so it can never leave
+# config/project.env in a state that scripts/verify.sh would reject.
 #
 # Usage:
 #   scripts/init-project.sh --name "My Project"   initialize
 #   scripts/init-project.sh                       infer the name from git origin
 #   scripts/init-project.sh --slug my-project     override the derived slug
 #   scripts/init-project.sh --dry-run             show the change, write nothing
-#   scripts/init-project.sh --force               re-initialize an initialized repo
+#   scripts/init-project.sh --force               reset identity on an initialized repo
 #   scripts/init-project.sh --help                usage
 #
 # Exit status: 0 on success or a no-op, 1 on a refusal, 2 on a usage error.
@@ -80,6 +82,18 @@ if [ "$FORCE" -eq 0 ] && { [ -n "$CURRENT_NAME" ] || [ "$CURRENT_PHASE" != "fact
   exit 0
 fi
 
+# --- Decide the target phase -------------------------------------------------
+# --force re-initializes IDENTITY only. It must never regress the lifecycle,
+# because rewriting an implementation-phase project back to discovery while
+# leaving ALLOW_APP_STACK=1 in place produces a state the gate rejects - a
+# "safe" script would have corrupted the repository it was asked to set up.
+# Moving a project backwards through the lifecycle is a reviewed decision, not
+# a side effect of re-running an init helper.
+TARGET_PHASE="discovery"
+if [ "$CURRENT_PHASE" != "factory" ] && [ -n "$CURRENT_PHASE" ]; then
+  TARGET_PHASE="$CURRENT_PHASE"
+fi
+
 # --- Determine the project name ---------------------------------------------
 # Inferring from git is a convenience for naming only. It never invents a
 # product definition, a stack, or a requirement.
@@ -117,7 +131,11 @@ printf '  repository:    %s\n' "$REPO_ROOT"
 printf '  foundation:    %s\n' "$(head -n 1 FOUNDATION_VERSION 2>/dev/null || echo unknown)"
 printf '  PROJECT_NAME:  %s -> %s\n' "${CURRENT_NAME:-<empty>}" "$NAME"
 printf '  PROJECT_SLUG:  %s -> %s\n' "$(config_value PROJECT_SLUG)" "$SLUG"
-printf '  PROJECT_PHASE: %s -> discovery\n' "${CURRENT_PHASE:-<empty>}"
+if [ "$TARGET_PHASE" = "${CURRENT_PHASE:-}" ]; then
+  printf '  PROJECT_PHASE: %s (preserved — --force sets identity only)\n' "$TARGET_PHASE"
+else
+  printf '  PROJECT_PHASE: %s -> %s\n' "${CURRENT_PHASE:-<empty>}" "$TARGET_PHASE"
+fi
 printf '  ALLOW_APP_STACK: unchanged (%s) — a stack needs an issue, an ADR and review\n' \
   "$(config_value ALLOW_APP_STACK)"
 
@@ -138,10 +156,10 @@ trap cleanup EXIT
 
 # Values are injected via awk -v, not interpolated into a script body, so a
 # name containing awk or shell metacharacters cannot alter the program.
-awk -v name="$NAME" -v slug="$SLUG" '
+awk -v name="$NAME" -v slug="$SLUG" -v phase="$TARGET_PHASE" '
   /^[[:space:]]*PROJECT_NAME[[:space:]]*=/  { print "PROJECT_NAME=" name; next }
   /^[[:space:]]*PROJECT_SLUG[[:space:]]*=/  { print "PROJECT_SLUG=" slug; next }
-  /^[[:space:]]*PROJECT_PHASE[[:space:]]*=/ { print "PROJECT_PHASE=discovery"; next }
+  /^[[:space:]]*PROJECT_PHASE[[:space:]]*=/ { print "PROJECT_PHASE=" phase; next }
   { print }
 ' "$CONFIG" > "$TMP" || die "failed to rewrite $CONFIG"
 

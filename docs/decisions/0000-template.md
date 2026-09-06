@@ -7,6 +7,13 @@
 **Status:** proposed | accepted | superseded by ADR-NNNN
 **Deciders:** <who or what decided>
 
+<!-- Add the line below ONLY on the ADR that selects the application stack.
+     scripts/verify.sh requires it, together with an accepted status, before
+     ALLOW_APP_STACK=1 is permitted in config/project.env:
+
+     **Decision Type:** application-stack
+-->
+
 ## Context
 
 <The situation, constraints, and forces at play. 2-5 sentences. Cite evidence:
