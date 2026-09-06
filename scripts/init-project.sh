@@ -128,8 +128,11 @@ fi
 
 # --- Write, atomically, preserving comments and key order --------------------
 TMP="$(mktemp "${TMPDIR:-/tmp}/app-factory-init.XXXXXX")" || die "could not create a temp file"
-# Invoked only via the EXIT trap, which shellcheck does not treat as a call site.
-# shellcheck disable=SC2329
+# Invoked only via the EXIT trap, which shellcheck does not treat as a call
+# site. Both codes are listed because the version decides which one is
+# reported: 0.11 flags SC2329 at the definition, 0.9 flags SC2317 on the body.
+# See the same note in scripts/verify.sh.
+# shellcheck disable=SC2317,SC2329
 cleanup() { rm -f "$TMP"; }
 trap cleanup EXIT
 
