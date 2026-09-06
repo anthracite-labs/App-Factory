@@ -133,6 +133,36 @@ independent reviewer reads the real diff before merge. Removing that step
 removes the only human check in the loop. Never merge your own agent-authored
 PR unreviewed.
 
+## Recording the application-stack decision
+
+When a project reaches the `architecture` stage and selects its stack, the ADR
+that records it must be machine-identifiable, because `scripts/verify.sh` will
+not permit `ALLOW_APP_STACK=1` without it. Copy
+[`decisions/0000-template.md`](decisions/0000-template.md), then ensure the
+finished ADR carries **both** of these as standalone metadata lines, alongside
+`**Date:**` and `**Deciders:**`:
+
+```text
+**Status:** accepted
+**Decision Type:** application-stack
+```
+
+Then point `STACK_DECISION_ADR` in
+[`../config/project.env`](../config/project.env) at that file.
+
+Two rules are enforced deliberately:
+
+- **Comments and code fences do not count.** The validator strips HTML comment
+  regions and fenced blocks before matching, so instructional text, examples,
+  or a quoted marker cannot satisfy the requirement. This page's fenced example
+  above is itself inert for exactly that reason.
+- **The match is a whole line, not a substring.** Prose that merely mentions
+  the marker is not a decision.
+
+Together these stop the most likely accident: copying the template to a new
+filename, leaving its instructions in place, and inheriting a stack marker the
+author never intended to assert.
+
 ## What the template does carry
 
 | Carried | Not carried |

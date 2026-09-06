@@ -7,12 +7,17 @@
 **Status:** proposed | accepted | superseded by ADR-NNNN
 **Deciders:** <who or what decided>
 
-<!-- Add the line below ONLY on the ADR that selects the application stack.
-     scripts/verify.sh requires it, together with an accepted status, before
-     ALLOW_APP_STACK=1 is permitted in config/project.env:
+<!-- STACK DECISIONS ONLY: the ADR that selects the application stack must
+     also carry a Decision Type metadata line whose value is the word
+     "application-stack", written in the same bold-label style as the fields
+     above and placed alongside them.
 
-     **Decision Type:** application-stack
--->
+     scripts/verify.sh requires that line, plus an accepted status, before
+     ALLOW_APP_STACK=1 is permitted in config/project.env. It is validated as
+     a real standalone metadata line: text inside comments like this one, or
+     inside code fences, deliberately does NOT count. The literal marker is
+     therefore not reproduced here - see docs/FACTORY.md for the exact line to
+     copy. -->
 
 ## Context
 

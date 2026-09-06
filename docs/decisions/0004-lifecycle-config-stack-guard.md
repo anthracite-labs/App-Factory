@@ -47,13 +47,33 @@ accepts `ALLOW_APP_STACK=1` only when **all** of the following hold:
 - `STACK_DECISION_ADR` names a file under `docs/decisions/` ending in `.md`;
 - that file is not the `0000-template.md` skeleton;
 - that file exists;
-- that file carries the marker `**Decision Type:** application-stack`;
-- that file carries `**Status:** accepted`.
+- that file carries the marker `**Decision Type:** application-stack` as a
+  real metadata line;
+- that file carries `**Status:** accepted` as a real metadata line;
+- each transition-critical key is assigned exactly once.
 
-The last three matter because file existence is not approval. Without the
+The last four matter because file existence is not approval. Without the
 marker and status requirements, pointing `STACK_DECISION_ADR` at the ADR
 template — or at any unrelated accepted foundation ADR — would stand the guard
 down, which is precisely the bypass the guard exists to prevent.
+
+**"Real metadata line" is load-bearing, and substring matching was not enough.**
+An independent review found that the shipped ADR template carried the literal
+marker inside an instructional HTML comment. Copying that template to a new
+filename and flipping only the status therefore produced an unrelated ADR that
+satisfied a `grep -F` check — reopening the exact bypass this ADR exists to
+close. Validation now strips HTML comment regions and fenced code blocks, then
+requires a whole-line match, so instructional text, quoted examples, and prose
+cannot authorise a transition. As defence in depth the template no longer
+contains the literal marker at all; the copyable text lives in
+`docs/FACTORY.md`, inside a fence that is itself inert under the same rule.
+
+**Cardinality is enforced in the shared validator, not only in
+`check_lifecycle`.** `config_value` takes the first assignment, so a valid
+first value followed by a conflicting duplicate would let
+`verify.sh --only=no_app_stack` stand the guard down on a configuration the
+full gate rejects. The validator now requires exactly one assignment of each
+transition-critical key.
 
 Sharing one helper is equally load-bearing. `verify.sh` supports `--only=NAME`,
 so `check_no_app_stack` can run with nothing else having executed. If it
@@ -131,7 +151,11 @@ Detect a `package.json` and conclude the project is in implementation.
   the ADR is missing, the template, unrelated, or merely proposed — including
   when only `--only=no_app_stack` is run.
 - Committed lifecycle state is unambiguous: duplicate assignments of any
-  required key are rejected rather than silently resolved to the first.
+  required key are rejected rather than silently resolved to the first, and the
+  standalone guard enforces this itself.
+- Markers cannot be inherited by accident: a copied template, a commented
+  marker, a fenced example, and prose mentioning the marker are all rejected,
+  each with its own regression test.
 - Documentation, CI, and the gate all read the same state, so `docs/ROADMAP.md`
   and repository reality cannot drift.
 - The template is genuinely reusable: a new project graduates without ever

@@ -256,19 +256,42 @@ expect_fail "no_app_stack/rejected-src-dir-in-architecture" --only=no_app_stack
 # 2. After an explicit, ADR-backed transition, the FOUNDATION guard stands
 #    down. This proves the guard is lifecycle state, not a permanent constant.
 # write_stack_adr creates an ADR fixture in the sandbox.
-#   $1 file name, $2 status line value, $3 "marked" to include the stack marker
+#   $1 file name
+#   $2 status line value
+#   $3 marker placement: marked | unmarked | commented | fenced
 write_stack_adr() {
   local file="$1" status="$2" marked="$3"
   {
     printf '# ADR-0099: Selftest stack decision fixture\n\n'
     printf '**Date:** 2026-09-06\n'
     printf '**Status:** %s\n' "$status"
-    if [ "$marked" = "marked" ]; then
-      printf '**Decision Type:** application-stack\n'
-    fi
+    case "$marked" in
+      marked)
+        printf '**Decision Type:** application-stack\n'
+        ;;
+      commented)
+        # The marker present ONLY inside an HTML comment must not count.
+        printf '<!-- **Decision Type:** application-stack -->\n'
+        ;;
+      fenced)
+        # The marker present ONLY inside a code fence must not count.
+        # shellcheck disable=SC2016  # literal backticks are the point here.
+        printf '\n```text\n**Decision Type:** application-stack\n```\n'
+        ;;
+    esac
     printf '**Deciders:** selftest fixture\n\n'
     printf '## Context\n\nFixture used by scripts/selftest.sh.\n'
   } > "${SANDBOX}/docs/decisions/${file}"
+}
+
+# copy_template_adr reproduces the most likely real-world accident: a
+# maintainer copies the shipped ADR template to a new filename, flips only the
+# status to accepted, and leaves the template's instructional comment intact.
+copy_template_adr() {
+  local file="$1" status="$2"
+  sed "s/^\\*\\*Status:\\*\\* proposed.*/**Status:** ${status}/" \
+    "${SANDBOX}/docs/decisions/0000-template.md" \
+    > "${SANDBOX}/docs/decisions/${file}"
 }
 
 # transition_to points the sandbox at an ADR and enables application mode.
@@ -336,6 +359,80 @@ write_stack_adr 0099-selftest-stack.md accepted unmarked
 transition_to 0099-selftest-stack.md
 expect_fail "lifecycle/adr-accepted-but-not-a-stack-decision" --only=lifecycle
 
+# --- Round 3: markers must be REAL metadata lines ---------------------------
+# Substring matching was a live bypass. The shipped template carried the
+# literal marker inside an instructional HTML comment, so copying it to a new
+# filename and flipping only the status produced an "unrelated ADR" that
+# satisfied both checks. Comments, code fences and prose must never authorise
+# a transition.
+reset_sandbox
+copy_template_adr 0005-copied-template.md accepted
+transition_to 0005-copied-template.md
+expect_fail "lifecycle/copied-template-marker-in-comment" --only=lifecycle
+
+reset_sandbox
+copy_template_adr 0005-copied-template.md accepted
+transition_to 0005-copied-template.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-copied-template-fails-closed" --only=no_app_stack
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed commented
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/marker-only-in-html-comment" --only=lifecycle
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed commented
+transition_to 0099-selftest-stack.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-marker-in-comment-fails-closed" --only=no_app_stack
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted fenced
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/marker-only-in-code-fence" --only=lifecycle
+
+# An accepted status that exists only inside a comment must not count either.
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed marked
+printf '<!-- **Status:** accepted -->\n' >> "${SANDBOX}/docs/decisions/0099-selftest-stack.md"
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/accepted-status-only-in-comment" --only=lifecycle
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md proposed marked
+printf '<!-- **Status:** accepted -->\n' >> "${SANDBOX}/docs/decisions/0099-selftest-stack.md"
+transition_to 0099-selftest-stack.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-status-in-comment-fails-closed" --only=no_app_stack
+
+# Prose mentioning the marker is not a decision: the match must be whole-line.
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted unmarked
+printf 'This ADR is not **Decision Type:** application-stack related.\n' \
+  >> "${SANDBOX}/docs/decisions/0099-selftest-stack.md"
+transition_to 0099-selftest-stack.md
+expect_fail "lifecycle/marker-as-substring-of-prose" --only=lifecycle
+
+# The shipped template must not itself contain an active marker, or every copy
+# of it inherits one. This pins the sanitised template as a durable property.
+reset_sandbox
+if grep -qE '^[[:space:]]*\*\*Decision Type:\*\* application-stack[[:space:]]*$' \
+  "${SANDBOX}/docs/decisions/0000-template.md"; then
+  bad "template/no-active-stack-marker" "the ADR template carries an active stack marker"
+else
+  ok "template/no-active-stack-marker" "template has no active marker line"
+fi
+
+# Documentation may show the marker, but only inertly (fenced), so that
+# docs/FACTORY.md can never authorise a transition if pointed at.
+reset_sandbox
+sed -i 's|^STACK_DECISION_ADR=.*|STACK_DECISION_ADR=docs/decisions/0000-template.md|' \
+  "${SANDBOX}/config/project.env"
+set_config PROJECT_PHASE implementation
+set_config ALLOW_APP_STACK 1
+expect_fail "lifecycle/template-path-still-rejected" --only=lifecycle
+
 # The same rejections must hold when no_app_stack runs ALONE. verify.sh
 # supports --only=NAME, so this check must not assume check_lifecycle ran; if
 # it trusts an unvalidated ALLOW_APP_STACK=1 it stands the guard down on an
@@ -381,6 +478,63 @@ expect_fail "lifecycle/duplicate-phase-key" --only=lifecycle
 reset_sandbox
 printf 'ALLOW_APP_STACK=1\n' >> "${SANDBOX}/config/project.env"
 expect_fail "lifecycle/duplicate-allow-key" --only=lifecycle
+
+# --- Round 3: cardinality must be counted correctly -------------------------
+# `grep -c` prints 0 AND exits 1 on no match, so the old
+# `grep -c ... || printf '0'` emitted "0\n0" and every numeric test on it was
+# a silent syntax error. A missing required key that broke no later semantic
+# check therefore evaded detection entirely. Each required key is removed
+# individually here so the counting cannot regress unnoticed.
+for missing_key in PROJECT_NAME PROJECT_SLUG PROJECT_PHASE ALLOW_APP_STACK STACK_DECISION_ADR; do
+  reset_sandbox
+  sed -i "/^${missing_key}=/d" "${SANDBOX}/config/project.env"
+  expect_fail "lifecycle/missing-${missing_key}" --only=lifecycle
+done
+
+# Duplicates of the remaining required keys are ambiguous too.
+reset_sandbox
+printf 'PROJECT_NAME=Second Name\n' >> "${SANDBOX}/config/project.env"
+expect_fail "lifecycle/duplicate-name-key" --only=lifecycle
+
+reset_sandbox
+printf 'STACK_DECISION_ADR=docs/decisions/0004-lifecycle-config-stack-guard.md\n' \
+  >> "${SANDBOX}/config/project.env"
+expect_fail "lifecycle/duplicate-stack-adr-key" --only=lifecycle
+
+# --- Round 3: standalone guard must reject ambiguous state ------------------
+# config_value takes the FIRST assignment, so a valid transition followed by a
+# conflicting duplicate would let --only=no_app_stack stand the guard down on
+# a config the full gate rejects. The shared validator now enforces cardinality
+# itself. Each case below has a VALID first set of values.
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
+printf 'PROJECT_PHASE=discovery\n' >> "${SANDBOX}/config/project.env"
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-duplicate-phase-fails-closed" --only=no_app_stack
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
+printf 'ALLOW_APP_STACK=0\n' >> "${SANDBOX}/config/project.env"
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-duplicate-allow-fails-closed" --only=no_app_stack
+
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
+printf 'STACK_DECISION_ADR=docs/decisions/0000-template.md\n' \
+  >> "${SANDBOX}/config/project.env"
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_fail "no_app_stack/only-duplicate-stack-adr-fails-closed" --only=no_app_stack
+
+# Positive control: the same fixture WITHOUT a duplicate must still stand down,
+# so the cardinality rule cannot pass by rejecting everything.
+reset_sandbox
+write_stack_adr 0099-selftest-stack.md accepted marked
+transition_to 0099-selftest-stack.md
+printf '{"name":"placeholder"}\n' > "${SANDBOX}/package.json"
+expect_pass "no_app_stack/only-valid-single-assignment-stands-down" --only=no_app_stack
 
 # 4. Malformed lifecycle configuration is rejected.
 reset_sandbox

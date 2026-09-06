@@ -131,10 +131,22 @@ config_value() {
 # config_key_count counts how many times a key is assigned. Duplicate
 # assignments make committed lifecycle state ambiguous: config_value silently
 # takes the first, a human reading the file usually takes the last.
+#
+# Implementation note: `grep -c` PRINTS 0 and EXITS 1 when nothing matches, so
+# `grep -c ... || printf '0'` emits "0\n0" and every later numeric test on the
+# result is a syntax error that silently evaluates false. That bug let a
+# missing required key pass the cardinality check entirely. Counting lines here
+# instead keeps the output a single integer on every path.
 config_key_count() {
   local key="$1"
-  [ -f "$PROJECT_CONFIG" ] || { printf '0'; return 0; }
-  grep -cE "^[[:space:]]*${key}[[:space:]]*=" "$PROJECT_CONFIG" 2>/dev/null || printf '0'
+  if [ ! -f "$PROJECT_CONFIG" ]; then
+    printf '0'
+    return 0
+  fi
+  # shellcheck disable=SC2126  # `grep -c` is exactly the bug described above:
+  # it exits 1 on no match, which corrupted the count. Keep grep | wc -l.
+  grep -E "^[[:space:]]*${key}[[:space:]]*=" "$PROJECT_CONFIG" 2>/dev/null |
+    wc -l | tr -d '[:space:]'
 }
 
 # The marker that makes an ADR machine-identifiable as the record of an
@@ -142,6 +154,61 @@ config_key_count() {
 # accepted status; existing on disk is not enough.
 STACK_ADR_MARKER='**Decision Type:** application-stack'
 STACK_ADR_STATUS='**Status:** accepted'
+
+# adr_has_metadata_line answers: does $1 contain $2 as a REAL metadata line?
+#
+# Substring matching is not sufficient here and was a live bypass: the ADR
+# template carries the marker inside an instructional <!-- --> comment, so
+# copying the template to another filename and flipping only the status made a
+# completely unrelated ADR satisfy both checks. Two rules close that:
+#
+#   1. HTML comment regions are stripped before matching, so instructional or
+#      example text can never satisfy a requirement.
+#   2. The match must be a whole line (after trimming surrounding whitespace),
+#      not a substring, so prose that merely mentions the marker is not enough.
+#
+# Fenced code blocks are stripped too: a documented example of a stack ADR
+# should not turn the document quoting it into one.
+adr_has_metadata_line() {
+  local file="$1" wanted="$2"
+  [ -f "$file" ] || return 1
+  awk -v want="$wanted" '
+    BEGIN { found = 0; in_comment = 0; in_fence = 0 }
+    {
+      line = $0
+
+      # Strip complete <!-- ... --> spans that open and close on this line.
+      while (match(line, /<!--.*-->/)) {
+        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+      }
+
+      # Handle multi-line comment regions.
+      if (in_comment) {
+        idx = index(line, "-->")
+        if (idx == 0) { next }
+        line = substr(line, idx + 3)
+        in_comment = 0
+      }
+      idx = index(line, "<!--")
+      if (idx > 0) {
+        line = substr(line, 1, idx - 1)
+        in_comment = 1
+      }
+
+      # Skip fenced code blocks.
+      probe = line
+      sub(/^[[:space:]]+/, "", probe)
+      if (probe ~ /^(```|~~~)/) { in_fence = !in_fence; next }
+      if (in_fence) { next }
+
+      # Whole-line match, ignoring surrounding whitespace.
+      sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if (line == want) { found = 1 }
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file"
+}
 
 # validate_stack_transition is the single source of truth for "may the
 # foundation no-stack guard stand down?". It is shared by check_lifecycle and
@@ -162,6 +229,20 @@ validate_stack_transition() {
   [ "$allow" = "1" ] || return 1
 
   local ok=0
+
+  # Ambiguous state must never authorise a transition. config_value takes the
+  # FIRST assignment, so a valid first value followed by a conflicting
+  # duplicate would otherwise let the standalone guard stand down on a config
+  # the full gate rejects. Cardinality is therefore enforced here, in the
+  # shared path, not only in check_lifecycle.
+  local tkey tcount
+  for tkey in PROJECT_PHASE ALLOW_APP_STACK STACK_DECISION_ADR; do
+    tcount="$(config_key_count "$tkey")"
+    if [ "$tcount" -ne 1 ]; then
+      _problems+=("${tkey} must be assigned exactly once to authorise a transition, found ${tcount}")
+      ok=1
+    fi
+  done
 
   if [ "$phase" != "implementation" ]; then
     _problems+=("ALLOW_APP_STACK=1 requires PROJECT_PHASE=implementation, got: ${phase:-<empty>}")
@@ -195,13 +276,14 @@ validate_stack_transition() {
   fi
 
   # Existence is not approval, and an arbitrary foundation ADR is not a stack
-  # decision. Both markers must be present in the referenced file.
-  if ! grep -qF "$STACK_ADR_MARKER" "$adr"; then
-    _problems+=("$adr is not marked as a stack decision (expected a line: ${STACK_ADR_MARKER})")
+  # decision. Both markers must appear as real metadata lines - not inside an
+  # HTML comment, not inside a code fence, and not as a substring of prose.
+  if ! adr_has_metadata_line "$adr" "$STACK_ADR_MARKER"; then
+    _problems+=("$adr has no active stack-decision marker (expected the standalone line: ${STACK_ADR_MARKER})")
     ok=1
   fi
-  if ! grep -qF "$STACK_ADR_STATUS" "$adr"; then
-    _problems+=("$adr is not accepted (expected a line: ${STACK_ADR_STATUS})")
+  if ! adr_has_metadata_line "$adr" "$STACK_ADR_STATUS"; then
+    _problems+=("$adr is not accepted (expected the standalone line: ${STACK_ADR_STATUS})")
     ok=1
   fi
 
