@@ -7,10 +7,10 @@ with **Arena Agent Mode** under **ECC** discipline and **ChatGPT** review.
 
 **Foundation version:** see [`FOUNDATION_VERSION`](FOUNDATION_VERSION) — `0.1.0`.
 
-This repository is the template. It contains **no application**: no framework,
-no database, no auth scheme, no hosting target, no UI, and no product
-definition. That is the point. What it ships is the machinery that makes those
-decisions disciplined when they are eventually made.
+This repository is the reusable template source. It contains **no application**:
+no framework, no database, no auth scheme, no hosting target, no UI, and no
+product definition. That is the point. What it ships is the machinery that makes
+those decisions disciplined when they are eventually made.
 
 ## What you get
 
@@ -19,7 +19,7 @@ decisions disciplined when they are eventually made.
 | **ECC-on-Arena adapter** | Engineering rules, 10 on-demand workflows, 3 review personas, adapted from ECC v2.2.0 (MIT), fully attributed. Not native ECC. |
 | **Deterministic gate** | `scripts/verify.sh` — 17 committed checks, non-zero on failure, re-run independently in CI. |
 | **Negative tests** | `scripts/selftest.sh` — injects faults into a throwaway copy and asserts the gate rejects each one. A gate that only ever passes proves nothing. |
-| **Lifecycle state** | `config/project.env` — discovery → architecture → implementation, with a no-stack guard that stands down only via a reviewed, ADR-backed transition. |
+| **Lifecycle state** | `config/project.env` — factory → discovery → architecture → implementation, with a no-stack guard that stands down only via a reviewed, ADR-backed transition. |
 | **Portable governance** | `config/main-ruleset.json` — a branch-protection payload with no instance ids, applicable to any new repository. |
 | **Clean documentation set** | Product, domain, roadmap, architecture, security, memory, and factory docs that start empty on purpose. |
 
@@ -60,7 +60,13 @@ Workflows are loaded one or two at a time, only when the task calls for them.
 ## Creating a new application from this foundation
 
 Read [`docs/FACTORY.md`](docs/FACTORY.md) — it is the authoritative checklist.
-The short version:
+Before expecting GitHub's **Use this template** action, confirm that this source
+repository is administratively marked as a **Template repository**. That GitHub
+setting is not represented by committed files; if it is not enabled, use the
+copy fallback documented in `docs/FACTORY.md` rather than treating the repository
+contents as proof that template mode is active.
+
+The short version after the new repository exists:
 
 ```bash
 bash scripts/init-project.sh --name "<Project Name>"   # non-destructive; does not commit
