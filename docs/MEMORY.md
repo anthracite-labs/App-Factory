@@ -82,3 +82,26 @@ reviewable. ECC stays pinned at v2.2.0; upgrading it is a separate version bump.
 **Next:** This template is `PROJECT_PHASE=factory`. A generated repository
 should run `scripts/init-project.sh` first, then complete the GitHub-admin
 checklist in [FACTORY.md](FACTORY.md), which the template cannot do for it.
+
+## 2026-09-10 — Greenfield preflight documentation audit
+
+**Context:** Issue #3, branch `chore/greenfield-preflight-cleanup`.
+**Did:** Aligned the README lifecycle summary with the committed lifecycle by
+including the `factory` phase, and clarified that GitHub's **Template repository**
+setting is administrative state rather than something committed repository files
+can prove or enable.
+**Verified:** Read-only GitHub repository metadata reported `is_template=false`;
+the repository rulesets endpoint returned no live rulesets at the time of this
+audit. The repository content itself still carries `config/main-ruleset.json`
+as the portable policy definition. No GitHub administrative setting was changed
+by this documentation task. CI on the exact PR head is the acceptance evidence
+for the repository edits.
+**Learned:** Calling App-Factory a template source and GitHub marking it as a
+template repository are separate states. The greenfield workflow must verify
+both repository contents and live GitHub configuration instead of inferring one
+from the other.
+**Next:** A maintainer should enable GitHub's **Template repository** setting
+before relying on **Use this template**, and separately decide whether to apply
+the portable Main ruleset to App-Factory itself. Generated repositories must
+still receive their own live governance because GitHub administrative settings
+are not inherited.
